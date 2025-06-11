@@ -1,8 +1,8 @@
 require("dotenv").config();
-const axios = require("axios");
-const cheerio = require("cheerio");
+const puppeteer = require("puppeteer");
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
+const fs = require("fs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,29 +13,62 @@ const PRODUCT_URL = "https://shop.amul.com/en/product/amul-high-protein-buttermi
 
 const bot = new TelegramBot(BOT_TOKEN);
 
-let isNotified = false;
-
 async function checkStock () {
     try {
-        const response = await axios.get(PRODUCT_URL);
-        const $ = cheerio.load(response.data);
+        const browser = await puppeteer.launch({ headless: true });
+        const page = await browser.newPage();
 
-        const availability = $('link[itemprop="availability"]').attr("href");
+        // Go to product page
+        await page.goto(PRODUCT_URL, { waitUntil: "networkidle2" });
 
-        console.log({ availability });
+        // Wait for pincode input
+        await page.waitForSelector('#locationWidgetModal input#search', { timeout: 10000 });
 
-        if (availability && availability.includes("InStock")) {
-            if (!isNotified) {
-                bot.sendMessage(CHAT_ID, `🟢 Product is BACK IN STOCK!\n${PRODUCT_URL}`);
-                console.log("Stock is available! Telegram sent.");
-                isNotified = true;
+        // Type pincode
+        await page.type('#locationWidgetModal input#search', '302017', { delay: 100 });
+
+        // Wait for suggestions
+        await page.waitForFunction(() => {
+            return document.querySelectorAll('#automatic .list-group-item').length >= 2;
+        }, { timeout: 10000 });
+
+        // Click the second suggestion using Puppeteer's mouse
+        const secondOption = await page.$('#automatic .list-group-item:nth-child(2)');
+
+        if (secondOption) {
+            const box = await secondOption.boundingBox();
+            if (box) {
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
             }
-        } else {
-            console.log("Out of stock:", new Date().toLocaleString());
-            isNotified = false;
         }
+
+        // Wait for either "Sold Out" or "Notify Me" section to appear
+        await page.waitForSelector('.product-enquiry-wrap, .alert.alert-danger.mt-3', {
+            timeout: 10000
+        });
+
+        // Optional screenshot for debugging
+        await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
+
+        // Check live DOM for availability
+        const { soldOutExists, notifyMeExists } = await page.evaluate(() => {
+            return {
+                soldOutExists: !!document.querySelector('div.alert.alert-danger.mt-3'),
+                notifyMeExists: !!document.querySelector('div.product-enquiry-wrap')
+            };
+        });
+
+        if (!soldOutExists || !notifyMeExists) {
+            console.log("✅ Item is available now. Sending Telegram message...");
+            await bot.sendMessage(CHAT_ID, `item is available now, buy here: ${PRODUCT_URL}`);
+        } else {
+            console.log("❌ Item is still out of stock.");
+        }
+
+        await browser.close();
+
     } catch (error) {
-        console.error("Error fetching stock status:", error.message);
+        console.error("❌ Error checking stock:", error.message);
     }
 }
 
@@ -43,6 +76,6 @@ async function checkStock () {
 setInterval(checkStock, 5 * 60 * 1000);
 checkStock();
 
-// Express ping route for UptimeRobot
-app.get("/", (req, res) => res.send("Bot is running ✅"));
-app.listen(PORT, () => console.log(`Ping server on http://localhost:${PORT}`));
+// UptimeRobot ping server
+app.get("/", (req, res) => res.send("✅ Bot is running"));
+app.listen(PORT, () => console.log(`Ping server running on port ${PORT}`));
