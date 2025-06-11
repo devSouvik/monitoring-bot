@@ -22,6 +22,8 @@ async function checkStock () {
 
         const availability = $('link[itemprop="availability"]').attr("href");
 
+        console.log({ availability });
+
         if (availability && availability.includes("InStock")) {
             if (!isNotified) {
                 bot.sendMessage(CHAT_ID, `🟢 Product is BACK IN STOCK!\n${PRODUCT_URL}`);
