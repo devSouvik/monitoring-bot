@@ -1,5 +1,6 @@
 require("dotenv").config();
-const puppeteer = require("puppeteer");
+const puppeteer = require("puppeteer-core");
+const chromium = require("chromium");
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
 const fs = require("fs");
@@ -16,9 +17,21 @@ const bot = new TelegramBot(BOT_TOKEN);
 async function checkStock () {
     try {
         const browser = await puppeteer.launch({
+            executablePath: chromium.path,
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        }); const page = await browser.newPage();
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
+        });
+
+        const page = await browser.newPage();
 
         // Go to product page
         await page.goto(PRODUCT_URL, { waitUntil: "networkidle2" });
@@ -48,9 +61,6 @@ async function checkStock () {
         await page.waitForSelector('.product-enquiry-wrap, .alert.alert-danger.mt-3', {
             timeout: 10000
         });
-
-        // Optional screenshot for debugging
-        // await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
 
         // Check live DOM for availability
         const { soldOutExists, notifyMeExists } = await page.evaluate(() => {
