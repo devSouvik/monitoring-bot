@@ -17,6 +17,7 @@ async function checkStock () {
     try {
         const browser = await puppeteer.launch({
             headless: true,
+            channel: "chrome", // tells Puppeteer to use the manually installed Chrome
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         }); const page = await browser.newPage();
 
