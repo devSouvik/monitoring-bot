@@ -15,8 +15,10 @@ async function checkStock () {
     try {
         const browser = await puppeteer.launch({
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            executablePath: '/opt/render/project/.render/chrome/opt/google/chrome/chrome'
         });
+
         const page = await browser.newPage();
 
         console.log("🔄 Opening product page...");
@@ -24,7 +26,7 @@ async function checkStock () {
 
         await page.waitForSelector('#locationWidgetModal input#search', { timeout: 10000 });
         console.log("⌨️ Entering pincode...");
-        await page.type('#locationWidgetModal input#search', '302017', { delay: 100 });
+        await page.type('#locationWidgetModal input#search', '711101', { delay: 100 });
 
         await page.waitForFunction(() => {
             return document.querySelectorAll('#automatic .list-group-item').length >= 2;
@@ -48,10 +50,8 @@ async function checkStock () {
 
         // ✅ Wait for product content
         console.log("⏳ Waiting for product content...");
-        await page.waitForSelector('.product-enquiry-wrap, .alert.alert-danger.mt-3', { timeout: 15000 });
-
-        // Screenshot for debug
-        // await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
+        // Wait for a general product container that always exists
+        await page.waitForSelector('.product-details', { timeout: 15000 });
 
         // DOM check
         const { soldOutExists, notifyMeExists } = await page.evaluate(() => {
