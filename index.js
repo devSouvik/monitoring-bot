@@ -15,8 +15,10 @@ const bot = new TelegramBot(BOT_TOKEN);
 
 async function checkStock () {
     try {
-        const browser = await puppeteer.launch({ headless: true });
-        const page = await browser.newPage();
+        const browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        }); const page = await browser.newPage();
 
         // Go to product page
         await page.goto(PRODUCT_URL, { waitUntil: "networkidle2" });
@@ -48,7 +50,7 @@ async function checkStock () {
         });
 
         // Optional screenshot for debugging
-        await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
+        // await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
 
         // Check live DOM for availability
         const { soldOutExists, notifyMeExists } = await page.evaluate(() => {
