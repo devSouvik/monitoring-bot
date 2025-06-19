@@ -2,6 +2,8 @@ require("dotenv").config();
 const puppeteer = require("puppeteer");
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
+const fs = require("fs").promises;
+const path = require("path");
 
 // 🚀 Initialize Express Server
 const app = express();
@@ -17,21 +19,150 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 // 📦 User Tracking Object
 const userSessions = {};
 
+// 📊 Product Status History (persistent storage)
+const STATUS_FILE = path.join(__dirname, 'product_status.json');
+
 // 🗂️ Available Commands
 const commands = [
     { command: '/start', description: 'Start the bot' },
     { command: '/track', description: 'Track product stock' },
-    { command: '/stop', description: 'Stop tracking' }
+    { command: '/stop', description: 'Stop tracking' },
+    { command: '/status', description: 'Check current product status' }
 ];
 
 // 📝 Set Bot Commands
 bot.setMyCommands(commands);
 
+// 💾 Load/Save Status Data Functions
+async function loadStatusData () {
+    try {
+        const data = await fs.readFile(STATUS_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.log("📄 No existing status file found, creating new one...");
+        return {};
+    }
+}
+
+async function saveStatusData (data) {
+    try {
+        await fs.writeFile(STATUS_FILE, JSON.stringify(data, null, 2));
+    } catch (error) {
+        console.error("💾 Error saving status data:", error.message);
+    }
+}
+
+async function updateProductStatus (chatId, productUrl, pincode, status, productName) {
+    const statusData = await loadStatusData();
+    const productKey = `${chatId}_${productUrl}_${pincode}`;
+
+    if (!statusData[productKey]) {
+        statusData[productKey] = {
+            productUrl,
+            pincode,
+            productName,
+            trackingStarted: new Date().toISOString(),
+            lastAvailable: null,
+            currentStatus: 'unknown'
+        };
+    }
+
+    statusData[productKey].currentStatus = status;
+    statusData[productKey].lastChecked = new Date().toISOString();
+
+    // Update last available time if product is in stock
+    if (status === 'in_stock') {
+        statusData[productKey].lastAvailable = new Date().toISOString();
+    }
+
+    await saveStatusData(statusData);
+    return statusData[productKey];
+}
+
+async function getProductStatus (chatId, productUrl, pincode) {
+    const statusData = await loadStatusData();
+    const productKey = `${chatId}_${productUrl}_${pincode}`;
+    return statusData[productKey] || null;
+}
+
 // 🏁 Start Command Handler
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, `🛒 *Welcome to Stock Tracker Bot!*\n\nI can monitor product availability on Amul's website for you.\n\nUse /track to begin monitoring a product.`,
+    bot.sendMessage(chatId, `🛒 *Welcome to Stock Tracker Bot!*\n\nI can monitor product availability on Amul's website for you.\n\nAvailable commands:\n• /track - Start tracking a product\n• /status - Check current status\n• /stop - Stop tracking`,
         { parse_mode: "Markdown" });
+});
+
+// 📊 Status Command Handler
+bot.onText(/\/status/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    try {
+        const session = userSessions[chatId];
+
+        if (!session || !session.productUrl) {
+            bot.sendMessage(chatId, "ℹ️ No active tracking session found.\n\nUse /track to start monitoring a product.");
+            return;
+        }
+
+        const statusInfo = await getProductStatus(chatId, session.productUrl, session.pincode);
+
+        if (!statusInfo) {
+            bot.sendMessage(chatId, "❌ No status data available.\n\nUse /track to start monitoring a product.");
+            return;
+        }
+
+        const currentStatus = statusInfo.currentStatus === 'in_stock' ? '✅ Available' : '❌ Out of Stock';
+        const trackingStarted = new Date(statusInfo.trackingStarted).toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+
+        const lastChecked = statusInfo.lastChecked ? new Date(statusInfo.lastChecked).toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        }) : 'Never';
+
+        let lastAvailableText;
+        if (statusInfo.lastAvailable) {
+            const lastAvailable = new Date(statusInfo.lastAvailable).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            lastAvailableText = `📅 Last Available: ${lastAvailable}`;
+        } else {
+            lastAvailableText = `📅 Last Available: No data available, tracking since ${trackingStarted}`;
+        }
+
+        const statusMessage = `📊 *Product Status Report*\n\n` +
+            `🏷️ Product: ${statusInfo.productName || 'Unknown Product'}\n` +
+            `📍 Pincode: ${statusInfo.pincode}\n` +
+            `📈 Current Status: ${currentStatus}\n` +
+            `🕐 Last Checked: ${lastChecked}\n` +
+            `${lastAvailableText}\n` +
+            `🔄 Tracking Started: ${trackingStarted}\n\n` +
+            `[View Product](${statusInfo.productUrl})`;
+
+        bot.sendMessage(chatId, statusMessage, { parse_mode: "Markdown" });
+
+    } catch (error) {
+        console.error("❌ Error getting status:", error.message);
+        bot.sendMessage(chatId, "⚠️ Error retrieving status information. Please try again.");
+    }
 });
 
 // 🔍 Track Command Handler
@@ -79,13 +210,13 @@ bot.on('message', async (msg) => {
                 // Start tracking immediately
                 await checkStock(chatId, userSessions[chatId].productUrl, userSessions[chatId].pincode);
 
-                // Set up interval tracking (every 5 minutes)
+                // Set up interval tracking (every 2 minutes)
                 userSessions[chatId].intervalId = setInterval(
                     () => checkStock(chatId, userSessions[chatId].productUrl, userSessions[chatId].pincode),
                     2 * 60 * 1000
                 );
 
-                bot.sendMessage(chatId, `✅ Now tracking product at:\n${userSessions[chatId].productUrl}\nfor pincode: ${userSessions[chatId].pincode}\n\nI'll notify you when stock status changes. Use /stop to cancel.`);
+                bot.sendMessage(chatId, `✅ Now tracking product at:\n${userSessions[chatId].productUrl}\nfor pincode: ${userSessions[chatId].pincode}\n\nI'll notify you when stock status changes.\n\nUse /status to check current status\nUse /stop to cancel tracking.`);
             } else {
                 bot.sendMessage(chatId, "❌ Invalid pincode. Please send a valid 6-digit pincode.");
             }
@@ -93,91 +224,7 @@ bot.on('message', async (msg) => {
     }
 });
 
-// 🔍 Stock Check Function
-// async function checkStock (chatId, productUrl, pincode) {
-//     try {
-//         console.log(`🔍 Checking stock for ${productUrl} (${pincode})...`);
-
-//         // 🌐 Launch Puppeteer Browser
-//         const browser = await puppeteer.launch({
-//             headless: true,
-//             args: ['--no-sandbox', '--disable-setuid-sandbox']
-//         });
-
-//         const page = await browser.newPage();
-
-//         // 🛍️ Open Product Page
-//         console.log("🔄 Opening product page...");
-//         await page.goto(productUrl, { waitUntil: "networkidle2" });
-
-//         // 📍 Enter Pincode
-//         console.log("⌨️ Entering pincode...");
-//         await page.waitForSelector('#locationWidgetModal input#search', { timeout: 10000 });
-//         await page.type('#locationWidgetModal input#search', pincode, { delay: 100 });
-
-//         // 📌 Select Location
-//         await page.waitForFunction(() => {
-//             return document.querySelectorAll('#automatic .list-group-item').length >= 2;
-//         }, { timeout: 10000 });
-
-//         console.log("✅ Selecting location...");
-//         const secondOption = await page.$('#automatic .list-group-item:nth-child(2)');
-
-//         if (secondOption) {
-//             const box = await secondOption.boundingBox();
-//             if (box) {
-//                 await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-//             }
-//         }
-
-//         // ⏳ Wait for UI Updates
-//         console.log("⏳ Waiting for page updates...");
-//         await page.waitForSelector('#locationWidgetModal', { hidden: true, timeout: 15000 });
-//         await page.waitForSelector('.product-details', { timeout: 15000 });
-
-//         // � Check Stock Status
-//         const { soldOutExists, notifyMeExists } = await page.evaluate(() => {
-//             return {
-//                 soldOutExists: !!document.querySelector('div.alert.alert-danger.mt-3'),
-//                 notifyMeExists: !!document.querySelector('div.product-enquiry-wrap')
-//             };
-//         });
-
-//         // 📨 Send Telegram Notification
-//         const productName = await page.evaluate(() => {
-//             return document.querySelector('.product-name.mb-2.fw-bold.lh-sm.text-dark.h3.mb-4')?.textContent.trim();
-//         });
-
-//         if (!soldOutExists || !notifyMeExists) {
-//             console.log("🎉 Item is available now! Sending notification...");
-//             await bot.sendMessage(chatId,
-//                 `🛒✅ *${productName} : Available!*\n\nNow in stock for pincode ${pincode}!\n\n[Buy Now](${productUrl})`,
-//                 { parse_mode: "Markdown" });
-//         } else {
-//             console.log("😔 Item is still out of stock.");
-//             // Only send notification if status changed
-//             if (userSessions[chatId]?.lastStatus !== 'out_of_stock') {
-//                 // await bot.sendMessage(chatId,
-//                 //     `⏳❌ *${productName} : Out of Stock*\n\nCurrently unavailable for pincode ${pincode}.`,
-//                 //     { parse_mode: "Markdown" });
-//                 return;
-//             }
-//         }
-
-//         // Update last known status
-//         userSessions[chatId].lastStatus = (!soldOutExists || !notifyMeExists) ? 'in_stock' : 'out_of_stock';
-
-//         await browser.close();
-
-//     } catch (error) {
-//         console.error("🔥 Error checking stock:", error.message);
-//         await bot.sendMessage(chatId,
-//             `⚠️ *Error Checking Stock*\n\nFailed to check status for pincode ${pincode}:\n${error.message}`,
-//             { parse_mode: "Markdown" });
-//     }
-// }
-
-// 🔍 Stock Check Function (FIXED VERSION)
+// 🔍 Stock Check Function (UPDATED VERSION)
 async function checkStock (chatId, productUrl, pincode) {
     try {
         console.log(`🔍 Checking stock for ${productUrl} (${pincode})...`);
@@ -260,6 +307,9 @@ async function checkStock (chatId, productUrl, pincode) {
         const currentStatus = isAvailable ? 'in_stock' : 'out_of_stock';
         const previousStatus = userSessions[chatId]?.lastStatus;
 
+        // 💾 Update persistent status data
+        await updateProductStatus(chatId, productUrl, pincode, currentStatus, productName);
+
         if (currentStatus !== previousStatus) {
             if (isAvailable) {
                 console.log("🎉 Item is now available! Sending notification...");
@@ -276,7 +326,7 @@ async function checkStock (chatId, productUrl, pincode) {
             console.log(`📝 Status unchanged: ${currentStatus}`);
         }
 
-        // Update last known status
+        // Update last known status in session
         userSessions[chatId].lastStatus = currentStatus;
 
         await browser.close();
